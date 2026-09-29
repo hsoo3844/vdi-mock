@@ -14,6 +14,7 @@ import secrets
 import time
 import urllib.parse
 from datetime import datetime, timezone
+from typing import Optional
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -25,11 +26,12 @@ from kubernetes.client.rest import ApiException
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
 from pydantic import BaseModel
 
+import store
+
 NAMESPACE = os.environ.get("VDI_NAMESPACE", "vdi-dev")
 GUAC_JSON_KEY = bytes.fromhex(os.environ["GUAC_JSON_SECRET_KEY"])
 GUAC_URL = os.environ.get("GUAC_URL", "/guacamole/")
 SESSION_KEY = os.environ.get("PORTAL_SESSION_KEY", secrets.token_hex(16)).encode()
-QUOTA = int(os.environ.get("VDI_QUOTA_PER_USER", "2"))
 CREATE_TIMEOUT = int(os.environ.get("VDI_CREATE_TIMEOUT_SEC", "600"))
 DESKTOP_USER = os.environ.get("VDI_DESKTOP_USER", "abc")
 DESKTOP_PASSWORD = os.environ.get("VDI_DESKTOP_PASSWORD", "abc")
@@ -196,16 +198,38 @@ def issue_token(username):
 
 
 def current_user(authorization: str = Header(default="")):
+    """Valid token + user still exists and is not disabled (비활성화 즉시 차단)."""
     token = authorization.removeprefix("Bearer ").strip()
     username, _, sig = token.rpartition(".")
     if not username or not hmac.compare_digest(sig, issue_token(username).rpartition(".")[2]):
         raise HTTPException(401, "login required")
-    return username
+    user = store.get_user(username)
+    if not user or user["disabled"]:
+        raise HTTPException(401, "account disabled or removed")
+    return user
+
+
+def require_admin(user: dict = Depends(current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "admin only")
+    return user
+
+
+def valid_username(name):
+    name = name.strip().lower()
+    if not name.isalnum() or not name.isascii() or len(name) > 20:
+        raise HTTPException(400, "username must be 1-20 alphanumeric characters")
+    return name
 
 
 # ---------------------------------------------------------------- api
 
 app = FastAPI(title="VDI mock portal")
+
+
+@app.on_event("startup")
+def startup():
+    store.init()
 
 
 class LoginRequest(BaseModel):
@@ -216,12 +240,39 @@ class CreateRequest(BaseModel):
     os: str
 
 
+def _create(owner, os_key, actor, quota):
+    if os_key not in IMAGES:
+        raise HTTPException(400, "unknown os")
+    active = [d for d in backend.list(owner) if d["status"] != "DELETING"]
+    if quota is not None and len(active) >= quota:
+        raise HTTPException(409, f"quota exceeded ({quota} desktops per user)")
+    desktop_id = secrets.token_hex(3)
+    backend.create(desktop_id, owner, os_key)
+    desktops_created.labels(os_key).inc()
+    store.log(actor, "desktop.create", owner, f"{desktop_id} {os_key}")
+    return {"id": desktop_id, "owner": owner, "status": "CREATING"}
+
+
+def _delete(desktop_id, owner, actor):
+    backend.delete(desktop_id)
+    desktops_deleted.inc()
+    store.log(actor, "desktop.delete", owner, desktop_id)
+    return {"id": desktop_id, "status": "DELETING"}
+
+
 @app.post("/api/auth/login")
 def login(req: LoginRequest):
-    username = req.username.strip().lower()
-    if not username.isalnum() or len(username) > 20:
-        raise HTTPException(400, "username must be 1-20 alphanumeric characters")
-    return {"token": issue_token(username), "username": username}
+    username = valid_username(req.username)
+    user = store.login(username)
+    if not user:
+        raise HTTPException(403, "account disabled")
+    store.log(username, "login")
+    return {"token": issue_token(username), "username": username, "role": user["role"]}
+
+
+@app.get("/api/me")
+def me(user: dict = Depends(current_user)):
+    return user
 
 
 @app.get("/api/images")
@@ -230,55 +281,177 @@ def images():
 
 
 @app.post("/api/desktops", status_code=202)
-def create_desktop(req: CreateRequest, user: str = Depends(current_user)):
-    if req.os not in IMAGES:
-        raise HTTPException(400, "unknown os")
-    active = [d for d in backend.list(user) if d["status"] != "DELETING"]
-    if len(active) >= QUOTA:
-        raise HTTPException(409, f"quota exceeded ({QUOTA} desktops per user)")
-    desktop_id = secrets.token_hex(3)
-    backend.create(desktop_id, user, req.os)
-    desktops_created.labels(req.os).inc()
-    return {"id": desktop_id, "status": "CREATING"}
+def create_desktop(req: CreateRequest, user: dict = Depends(current_user)):
+    return _create(user["username"], req.os, user["username"], user["quota"])
 
 
 @app.get("/api/desktops")
-def list_desktops(user: str = Depends(current_user)):
-    result = backend.list(user)
+def list_desktops(user: dict = Depends(current_user)):
+    result = backend.list(user["username"])
     for d in result:
         if d["status"] == "ERROR":  # 타임아웃 → 롤백
             desktops_failed.inc()
             backend.delete(d["id"])
+            store.log("system", "desktop.rollback", d["owner"], d["id"])
     return result
 
 
 def _owned(desktop_id, user):
     d = backend.status(desktop_id)
-    if not d or d["owner"] != user:
+    if not d or d["owner"] != user["username"]:
         raise HTTPException(404, "not found")
     return d
 
 
 @app.get("/api/desktops/{desktop_id}")
-def get_desktop(desktop_id: str, user: str = Depends(current_user)):
+def get_desktop(desktop_id: str, user: dict = Depends(current_user)):
     return _owned(desktop_id, user)
 
 
 @app.post("/api/desktops/{desktop_id}/connect")
-def connect(desktop_id: str, user: str = Depends(current_user)):
+def connect(desktop_id: str, user: dict = Depends(current_user)):
     d = _owned(desktop_id, user)
     if d["status"] != "READY":
         raise HTTPException(409, f"desktop is {d['status']}")
-    data = urllib.parse.quote(guacamole_data(user, d), safe="")
+    store.log(user["username"], "desktop.connect", user["username"], desktop_id)
+    data = urllib.parse.quote(guacamole_data(user["username"], d), safe="")
     return {"url": f"{GUAC_URL}?data={data}"}
 
 
 @app.delete("/api/desktops/{desktop_id}", status_code=202)
-def delete_desktop(desktop_id: str, user: str = Depends(current_user)):
+def delete_desktop(desktop_id: str, user: dict = Depends(current_user)):
     _owned(desktop_id, user)
-    backend.delete(desktop_id)
-    desktops_deleted.inc()
-    return {"id": desktop_id, "status": "DELETING"}
+    return _delete(desktop_id, user["username"], user["username"])
+
+
+# ---------------------------------------------------------------- admin api
+
+
+class AdminUserCreate(BaseModel):
+    username: str
+    role: str = "user"
+    quota: Optional[int] = None
+
+
+class AdminUserUpdate(BaseModel):
+    role: Optional[str] = None
+    quota: Optional[int] = None
+    disabled: Optional[bool] = None
+
+
+class AdminDesktopCreate(BaseModel):
+    owner: str
+    os: str
+
+
+def _check_role(role):
+    if role is not None and role not in ("user", "admin"):
+        raise HTTPException(400, "role must be user or admin")
+
+
+@app.get("/api/admin/summary")
+def admin_summary(_: dict = Depends(require_admin)):
+    desktops = backend.list()
+    users = store.list_users()
+
+    def count(key):
+        out = {}
+        for d in desktops:
+            out[d[key] or "-"] = out.get(d[key] or "-", 0) + 1
+        return out
+
+    return {
+        "users": len(users),
+        "admins": sum(u["role"] == "admin" for u in users),
+        "disabled": sum(u["disabled"] for u in users),
+        "desktops": len(desktops),
+        "by_status": count("status"),
+        "by_os": count("os_name"),
+        "by_node": count("node"),
+    }
+
+
+@app.get("/api/admin/users")
+def admin_users(_: dict = Depends(require_admin)):
+    per_user = {}
+    for d in backend.list():
+        per_user[d["owner"]] = per_user.get(d["owner"], 0) + 1
+    return [{**u, "desktops": per_user.get(u["username"], 0)} for u in store.list_users()]
+
+
+@app.post("/api/admin/users", status_code=201)
+def admin_create_user(req: AdminUserCreate, admin: dict = Depends(require_admin)):
+    _check_role(req.role)
+    username = valid_username(req.username)
+    user = store.create_user(username, req.role, req.quota)
+    if not user:
+        raise HTTPException(409, "user already exists")
+    store.log(admin["username"], "user.create", username, f"role={req.role}")
+    return user
+
+
+@app.patch("/api/admin/users/{username}")
+def admin_update_user(username: str, req: AdminUserUpdate, admin: dict = Depends(require_admin)):
+    _check_role(req.role)
+    if req.quota is not None and req.quota < 0:
+        raise HTTPException(400, "quota must be >= 0")
+    target = store.get_user(username)
+    if not target:
+        raise HTTPException(404, "not found")
+    losing_admin = target["role"] == "admin" and not target["disabled"] and (req.role == "user" or req.disabled)
+    if losing_admin and store.count_active_admins() <= 1:
+        raise HTTPException(409, "at least one active admin is required")
+    user = store.update_user(username, req.role, req.quota, req.disabled)
+    changes = ", ".join(f"{k}={v}" for k, v in req.model_dump(exclude_none=True).items())
+    store.log(admin["username"], "user.update", username, changes)
+    return user
+
+
+@app.delete("/api/admin/users/{username}")
+def admin_delete_user(username: str, admin: dict = Depends(require_admin)):
+    target = store.get_user(username)
+    if not target:
+        raise HTTPException(404, "not found")
+    if username == admin["username"]:
+        raise HTTPException(409, "cannot delete yourself")
+    if target["role"] == "admin" and not target["disabled"] and store.count_active_admins() <= 1:
+        raise HTTPException(409, "at least one active admin is required")
+    reclaimed = [d["id"] for d in backend.list(username)]
+    for desktop_id in reclaimed:
+        _delete(desktop_id, username, admin["username"])
+    store.delete_user(username)
+    store.log(admin["username"], "user.delete", username, f"reclaimed={len(reclaimed)}")
+    return {"username": username, "reclaimed": reclaimed}
+
+
+@app.get("/api/admin/desktops")
+def admin_desktops(owner: Optional[str] = None, _: dict = Depends(require_admin)):
+    return backend.list(owner)
+
+
+@app.post("/api/admin/desktops", status_code=202)
+def admin_create_desktop(req: AdminDesktopCreate, admin: dict = Depends(require_admin)):
+    owner = store.get_user(req.owner)
+    if not owner:
+        raise HTTPException(404, "user not found")
+    # 관리자 할당은 할당량을 무시한다
+    return _create(owner["username"], req.os, admin["username"], None)
+
+
+@app.delete("/api/admin/desktops/{desktop_id}", status_code=202)
+def admin_delete_desktop(desktop_id: str, admin: dict = Depends(require_admin)):
+    d = backend.status(desktop_id)
+    if not d:
+        raise HTTPException(404, "not found")
+    return _delete(desktop_id, d["owner"], admin["username"])
+
+
+@app.get("/api/admin/events")
+def admin_events(limit: int = 100, username: Optional[str] = None, _: dict = Depends(require_admin)):
+    return store.events(min(limit, 500), username)
+
+
+# ---------------------------------------------------------------- misc
 
 
 @app.get("/metrics")
@@ -302,3 +475,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 @app.get("/")
 def index():
     return FileResponse("static/index.html")
+
+
+@app.get("/admin")
+def admin_page():
+    return FileResponse("static/admin.html")
+

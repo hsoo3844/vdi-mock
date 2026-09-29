@@ -14,7 +14,7 @@ spec:
       serviceAccountName: vdi-portal
       containers:
         - name: portal
-          image: vdi-portal:0.1.0
+          image: vdi-portal:0.2.0
           imagePullPolicy: Never   # 레지스트리 없이 노드 containerd에 직접 import
           env:
             - name: VDI_NAMESPACE
@@ -27,6 +27,15 @@ spec:
             - name: PORTAL_SESSION_KEY
               valueFrom:
                 secretKeyRef: { name: vdi-secrets, key: portal-session-key }
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: vdi-secrets, key: db-password }
+            - name: VDI_ADMIN_USERNAME
+              value: admin
+            - name: VDI_QUOTA_PER_USER
+              value: "2"
           ports:
             - containerPort: 8000
           readinessProbe:

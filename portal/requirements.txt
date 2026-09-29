@@ -3,3 +3,4 @@ uvicorn[standard]==0.34.0
 kubernetes==31.0.0
 cryptography==44.0.0
 prometheus-client==0.21.1
+psycopg[binary]==3.2.3

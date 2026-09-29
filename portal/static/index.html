@@ -21,7 +21,8 @@
   th { color:var(--muted); font-weight:500; }
   .st { font-weight:600; }
   .READY { color:var(--ok); } .CREATING, .DELETING { color:var(--warn); } .ERROR { color:var(--err); }
-  button.act { padding:6px 12px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; margin-right:6px; }
+  a.act { text-decoration:none; color:var(--fg); font-size:13px; }
+  button.act, a.act { padding:6px 12px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; margin-right:6px; }
   button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
   button:disabled { opacity:.45; cursor:default; }
   input { padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:14px; }
@@ -36,7 +37,7 @@
     <h2>로그인</h2>
     <input id="username" placeholder="사용자 이름 (영문/숫자)">
     <button class="act primary" onclick="login()">로그인</button>
-    <div class="muted">목업이라 비밀번호 없이 사용자 이름만으로 로그인합니다.</div>
+    <div class="muted">목업이라 비밀번호 없이 이름만으로 로그인합니다 (처음 쓰는 이름은 자동 가입, 관리자는 <b>admin</b>).</div>
   </section>
   <div id="app" hidden>
     <section>
@@ -66,6 +67,10 @@ async function login() {
   const r = await fetch('/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ username: document.getElementById('username').value }) });
   const d = await r.json();
   if (!r.ok) return alert(d.detail);
+  if (d.role === 'admin' && confirm('관리자 계정입니다. 관리자 페이지로 이동할까요?')) {
+    localStorage.setItem('vdiToken', d.token); localStorage.setItem('vdiUser', d.username);
+    return location.href = '/admin';
+  }
   token = d.token; user = d.username;
   localStorage.setItem('vdiToken', token); localStorage.setItem('vdiUser', user);
   show();
@@ -75,8 +80,12 @@ function logout() { localStorage.clear(); token = user = null; show(); }
 async function show() {
   document.getElementById('login').hidden = !!token;
   document.getElementById('app').hidden = !token;
-  document.getElementById('who').innerHTML = token ? `${user} <button class="act" onclick="logout()">로그아웃</button>` : '';
+  document.getElementById('who').innerHTML = '';
   if (!token) return;
+  const me = await api('GET', '/api/me');
+  document.getElementById('who').innerHTML = `${me.username} <span class="muted">(${me.role}, 할당량 ${me.quota})</span> `
+    + (me.role === 'admin' ? '<a class="act" href="/admin">관리자 페이지</a> ' : '')
+    + '<button class="act" onclick="logout()">로그아웃</button>';
   const images = await api('GET', '/api/images');
   document.getElementById('images').innerHTML = images.map(i => `<button onclick="create('${i.id}')"><b>${i.name}</b><div class="muted">${i.id}</div></button>`).join('');
   refresh();

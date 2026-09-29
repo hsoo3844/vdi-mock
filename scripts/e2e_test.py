@@ -66,4 +66,39 @@ assert codes == [202, 409]
 for d in requests.get(f"{B}/api/desktops", headers=H).json():
     requests.delete(f"{B}/api/desktops/{d['id']}", headers=H)
 print("cleanup requested; remaining:", [(d["id"], d["status"]) for d in requests.get(f"{B}/api/desktops", headers=H).json()])
+
+# ---------------------------------------------------------------- admin
+assert requests.get(f"{B}/api/admin/users", headers=H).status_code == 403  # 일반 유저 차단
+admin = requests.post(f"{B}/api/auth/login", json={"username": "admin"}).json()
+assert admin["role"] == "admin", admin
+A = {"Authorization": f"Bearer {admin['token']}"}
+print("admin summary", requests.get(f"{B}/api/admin/summary", headers=A).json())
+users = {u["username"]: u for u in requests.get(f"{B}/api/admin/users", headers=A).json()}
+assert "e2etest" in users
+
+r = requests.patch(f"{B}/api/admin/users/e2etest", json={"quota": 0}, headers=A)
+assert r.json()["quota"] == 0
+assert requests.post(f"{B}/api/desktops", json={"os": "ubuntu-icewm"}, headers=H).status_code == 409
+print("quota 0 -> user create 409 OK")
+
+r = requests.post(f"{B}/api/admin/desktops", json={"owner": "e2etest", "os": "ubuntu-icewm"}, headers=A)
+assert r.status_code == 202, r.text
+assigned = r.json()["id"]
+assert any(d["id"] == assigned for d in requests.get(f"{B}/api/desktops", headers=H).json())
+print("admin assign (quota bypass) OK", assigned)
+
+requests.patch(f"{B}/api/admin/users/e2etest", json={"disabled": True}, headers=A)
+assert requests.get(f"{B}/api/desktops", headers=H).status_code == 401
+assert requests.post(f"{B}/api/auth/login", json={"username": "e2etest"}).status_code == 403
+print("disable -> token 401 / login 403 OK")
+
+assert requests.patch(f"{B}/api/admin/users/admin", json={"role": "user"}, headers=A).status_code == 409
+print("last admin protected OK")
+
+r = requests.delete(f"{B}/api/admin/users/e2etest", headers=A)
+assert r.status_code == 200 and assigned in r.json()["reclaimed"], r.text
+print("delete user + reclaim OK", r.json())
+
+ev = requests.get(f"{B}/api/admin/events?limit=20", headers=A).json()
+print("events", [(e["actor"], e["action"], e["target"]) for e in ev[:6]])
 print("E2E OK")

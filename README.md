@@ -5,15 +5,29 @@ OpenStack VM 대신 xrdp 컨테이너 Pod를 "데스크톱"으로 쓰고, 나머
 
 ## 접속
 
-- 포털: http://localhost:30080/  (사용자 이름만 입력하면 로그인)
+- 포털: http://localhost:30080/  (이름만 입력하면 로그인, 처음 쓰는 이름은 자동 가입)
+- 관리자: http://localhost:30080/admin  (이름 **admin** 으로 로그인 — 목업이라 비밀번호 없음)
 - Guacamole: http://localhost:30080/guacamole/  (포털의 "접속" 버튼으로만 로그인, 직접 로그인 불가)
+
+## 관리자 페이지
+
+| 탭 | 기능 |
+|---|---|
+| 대시보드 | 사용자·관리자·비활성 수, 데스크톱 상태별 / OS별 / 노드별 집계 |
+| 사용자 | 추가(역할·할당량), 할당량 변경, 관리자 지정/해제, 비활성화(기존 토큰 즉시 차단), 삭제(데스크톱 함께 회수) |
+| 데스크톱 | 전체 목록·사용자 필터, 특정 사용자에게 할당(할당량 무시), 강제 회수 |
+| 이벤트 | 로그인·생성·접속·반납·관리 작업 감사 로그 |
+
+마지막 활성 관리자는 해제·비활성화·삭제할 수 없다. API: `/api/admin/{summary,users,desktops,events}` (admin 역할 필요).
+유저·이벤트는 PostgreSQL(`postgres-0`, local-path PVC 1Gi), 데스크톱 상태는 계속 Pod 라벨이 기준.
 
 ## 구성
 
 ```
 노트북 :30080 ─(VirtualBox NAT Network 포트포워딩 vdi-http)─> worker1 192.168.0.102:30080
   └ Traefik (NodePort 30080, worker1 고정)
-      ├ /           → vdi-portal (FastAPI)  ── K8s API로 데스크톱 Pod/Service 생성·삭제
+      ├ /, /admin   → vdi-portal (FastAPI)  ── K8s API로 데스크톱 Pod/Service 생성·삭제
+      │                  └ postgres (유저, 이벤트)
       └ /guacamole  → guacamole(web) ── guacd ──RDP 3389──> desk-<id> Pod (xrdp)
 ```
 
@@ -41,7 +55,7 @@ K8s v1.30.14 (kubeadm), Calico (Pod CIDR 10.244.0.0/16), 네임스페이스 `vdi
 | 할당량 초과 409, 생성 202 비동기 | 동일 (사용자당 2대) |
 | `/metrics` | `vdi_desktops{status}`, `vdi_desktops_created_total` 등 |
 
-목업에서 빠진 것: 로그인 비밀번호, DB(상태는 Pod 라벨에서 계산), IN_USE/IDLE 판정과 30분 자동 반납, TLS, CI/CD(ArgoCD).
+목업에서 빠진 것: 로그인 비밀번호, IN_USE/IDLE 판정과 30분 자동 반납, TLS, CI/CD(ArgoCD).
 
 ## 배포 / 재배포
 
@@ -49,7 +63,7 @@ master에서 (`~/vdi-mock`에 이 repo 복사):
 
 ```bash
 ./scripts/build-portal.sh      # 포털 이미지 빌드 → worker containerd import (포털 코드 바꿨을 때)
-./scripts/deploy.sh            # Secret(최초 1회 랜덤 생성), Traefik(helm), 매니페스트 적용
+./scripts/deploy.sh            # local-path SC, Secret(없는 키만 랜덤 생성), Traefik(helm), PostgreSQL, 매니페스트 적용
 kubectl -n vdi-dev rollout restart deploy/vdi-portal   # 이미지 교체 후
 ```
 
@@ -63,6 +77,7 @@ kubectl -n vdi-dev rollout restart deploy/vdi-portal   # 이미지 교체 후
 
 ```bash
 python scripts/e2e_test.py     # 로그인 → 생성 → READY → Guacamole 토큰 → RDP 세션 → 할당량 409 → 반납
+                               # + 관리자: 할당량 변경, 할당, 비활성화 401/403, 마지막 관리자 보호, 삭제·회수, 이벤트
 ```
 
 ## 정리
