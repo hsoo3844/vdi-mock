@@ -8,12 +8,26 @@ OpenStack VM 대신 xrdp 컨테이너 Pod를 "데스크톱"으로 쓰고, 나머
 - 포털: http://localhost:30080/  (이름만 입력하면 로그인, 처음 쓰는 이름은 자동 가입)
 - 관리자: http://localhost:30080/admin  (이름 **admin** 으로 로그인 — 목업이라 비밀번호 없음)
 - Guacamole: http://localhost:30080/guacamole/  (포털의 "접속" 버튼으로만 로그인, 직접 로그인 불가)
+- Prometheus UI: http://localhost:30080/prometheus/
+
+## 모니터링 (관리자 → 모니터링 탭)
+
+Prometheus v3.5 (`monitoring` ns, master 노드, 15초 수집, 6시간 보존)가 수집하고, 관리자 페이지가 포털 API(`/api/admin/prom/{query,query_range}`, admin 전용·읽기 전용)를 거쳐 조회해 SVG 차트로 그린다.
+
+| 수집 대상 | 지표 |
+|---|---|
+| node-exporter (DaemonSet, 전 노드) | 노드 CPU·메모리·디스크 사용률, 네트워크 수신 |
+| kubelet cAdvisor (API 서버 프록시) | 데스크톱 Pod별 CPU·메모리 (`vdi-dev`, `monitoring`, `traefik` ns만 보관) |
+| 포털 `/metrics` | `vdi_desktops{status}`, 생성/반납/롤백 카운터, `vdi_desktop_ready_seconds`(생성→RDP 준비), API 요청 수·지연 |
+
+Grafana는 VM 자원(worker 1 vCPU)을 고려해 제외했다.
 
 ## 관리자 페이지
 
 | 탭 | 기능 |
 |---|---|
-| 대시보드 | 사용자·관리자·비활성 수, 데스크톱 상태별 / OS별 / 노드별 집계 |
+| 대시보드 | 사용자·관리자·비활성 수, 평균 준비 시간, 클러스터 CPU, 상태별 / OS별 / 노드별 집계, 최근 활동 |
+| 모니터링 | 노드 게이지(CPU·메모리·디스크), 시계열(노드 CPU·메모리·네트워크, 데스크톱별 CPU·메모리, 상태 추이, API 요청), 서비스 지표, 수집 대상 상태 |
 | 사용자 | 추가(역할·할당량), 할당량 변경, 관리자 지정/해제, 비활성화(기존 토큰 즉시 차단), 삭제(데스크톱 함께 회수) |
 | 데스크톱 | 전체 목록·사용자 필터, 특정 사용자에게 할당(할당량 무시), 강제 회수 |
 | 이벤트 | 로그인·생성·접속·반납·관리 작업 감사 로그 |
@@ -83,7 +97,8 @@ python scripts/e2e_test.py     # 로그인 → 생성 → READY → Guacamole �
 ## 정리
 
 ```bash
-kubectl delete ns vdi-dev && helm -n traefik uninstall traefik && kubectl delete ns traefik
+kubectl delete ns vdi-dev monitoring && kubectl delete clusterrole,clusterrolebinding prometheus
+helm -n traefik uninstall traefik && kubectl delete ns traefik
 ```
 ```powershell
 & "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe" natnetwork modify --netname Nat --port-forward-4 delete vdi-http

@@ -22,5 +22,5 @@ helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
 helm repo update traefik >/dev/null
 helm upgrade --install traefik traefik/traefik -n traefik --create-namespace -f traefik-values.yaml
 
-kubectl apply -f 05-postgres.yaml -f 10-guacamole.yaml -f 20-portal.yaml -f 30-networkpolicy.yaml -f 40-ingress.yaml
+kubectl apply -f 05-postgres.yaml -f 10-guacamole.yaml -f 20-portal.yaml -f 30-networkpolicy.yaml -f 40-ingress.yaml -f 50-monitoring.yaml
 kubectl -n vdi-dev rollout status statefulset/postgres deploy/guacd deploy/guacamole deploy/vdi-portal --timeout=300s

@@ -12,18 +12,20 @@ import json
 import os
 import secrets
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from typing import Optional
 
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, generate_latest
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from pydantic import BaseModel
 
 import store
@@ -31,6 +33,7 @@ import store
 NAMESPACE = os.environ.get("VDI_NAMESPACE", "vdi-dev")
 GUAC_JSON_KEY = bytes.fromhex(os.environ["GUAC_JSON_SECRET_KEY"])
 GUAC_URL = os.environ.get("GUAC_URL", "/guacamole/")
+PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus.monitoring:9090/prometheus")
 SESSION_KEY = os.environ.get("PORTAL_SESSION_KEY", secrets.token_hex(16)).encode()
 CREATE_TIMEOUT = int(os.environ.get("VDI_CREATE_TIMEOUT_SEC", "600"))
 DESKTOP_USER = os.environ.get("VDI_DESKTOP_USER", "abc")
@@ -38,9 +41,12 @@ DESKTOP_PASSWORD = os.environ.get("VDI_DESKTOP_PASSWORD", "abc")
 
 # 선택 가능한 OS 목록 (실제 환경에서는 Glance 이미지 조회로 대체)
 IMAGES = {
-    "ubuntu-xfce": {"name": "Ubuntu XFCE", "image": "lscr.io/linuxserver/rdesktop:ubuntu-xfce"},
-    "ubuntu-mate": {"name": "Ubuntu MATE", "image": "lscr.io/linuxserver/rdesktop:ubuntu-mate"},
-    "ubuntu-icewm": {"name": "Ubuntu IceWM (경량)", "image": "lscr.io/linuxserver/rdesktop:ubuntu-icewm"},
+    "ubuntu-xfce": {"name": "Ubuntu XFCE", "image": "lscr.io/linuxserver/rdesktop:ubuntu-xfce",
+                    "desc": "가볍고 표준적인 데스크톱. 처음이라면 이걸로."},
+    "ubuntu-mate": {"name": "Ubuntu MATE", "image": "lscr.io/linuxserver/rdesktop:ubuntu-mate",
+                    "desc": "익숙한 클래식 레이아웃의 풀 데스크톱."},
+    "ubuntu-icewm": {"name": "Ubuntu IceWM (경량)", "image": "lscr.io/linuxserver/rdesktop:ubuntu-icewm",
+                     "desc": "최소 자원으로 가장 빠르게 뜨는 경량 환경."},
 }
 
 LABEL_APP = "vdi-desktop"
@@ -49,6 +55,13 @@ desktops_created = Counter("vdi_desktops_created_total", "Desktop create request
 desktops_deleted = Counter("vdi_desktops_deleted_total", "Desktop delete requests")
 desktops_failed = Counter("vdi_desktops_failed_total", "Desktops that timed out and were rolled back")
 desktops_current = Gauge("vdi_desktops", "Desktops by status", ["status"])
+http_requests = Counter("vdi_http_requests_total", "Portal API requests", ["method", "route", "code"])
+http_latency = Histogram("vdi_http_request_seconds", "Portal API latency", ["route"])
+desktop_ready_seconds = Histogram(
+    "vdi_desktop_ready_seconds", "Time from create request to RDP ready", ["os"],
+    buckets=(5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 300, 600),
+)
+_ready_observed = set()
 
 
 # ---------------------------------------------------------------- backend
@@ -134,7 +147,8 @@ class KubernetesDesktopBackend:
     def _to_desktop(self, pod):
         labels = pod.metadata.labels
         created = pod.metadata.creation_timestamp
-        ready = any(c.type == "Ready" and c.status == "True" for c in (pod.status.conditions or []))
+        ready_cond = next((c for c in (pod.status.conditions or []) if c.type == "Ready" and c.status == "True"), None)
+        ready = ready_cond is not None
         age = (datetime.now(timezone.utc) - created).total_seconds()
         if pod.metadata.deletion_timestamp:
             status = "DELETING"
@@ -144,14 +158,26 @@ class KubernetesDesktopBackend:
             status = "ERROR"
         else:
             status = "CREATING"
+        # 생성 단계 (UI 진행 표시용): 노드 배치 → 이미지 준비 → RDP 응답 대기 → 준비 완료
+        container = (pod.status.container_statuses or [None])[0]
+        if ready:
+            stage = "ready"
+        elif not pod.spec.node_name:
+            stage = "scheduling"
+        elif container and container.state and container.state.running:
+            stage = "booting"
+        else:
+            stage = "pulling"
         return {
             "id": labels["vdi/id"],
             "owner": labels["vdi/owner"],
             "os": labels["vdi/os"],
             "os_name": IMAGES.get(labels["vdi/os"], {}).get("name", labels["vdi/os"]),
             "status": status,
+            "stage": stage,
             "node": pod.spec.node_name,
             "created_at": created.isoformat(),
+            "ready_seconds": (ready_cond.last_transition_time - created).total_seconds() if ready else None,
         }
 
 
@@ -279,7 +305,7 @@ def me(user: dict = Depends(current_user)):
 
 @app.get("/api/images")
 def images():
-    return [{"id": k, "name": v["name"]} for k, v in IMAGES.items()]
+    return [{"id": k, "name": v["name"], "desc": v["desc"]} for k, v in IMAGES.items()]
 
 
 @app.post("/api/desktops", status_code=202)
@@ -453,7 +479,45 @@ def admin_events(limit: int = 100, username: Optional[str] = None, _: dict = Dep
     return store.events(min(limit, 500), username)
 
 
+@app.get("/api/admin/prom/{kind}")
+def admin_prom(
+    kind: str,
+    query: str,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+    step: Optional[float] = None,
+    _: dict = Depends(require_admin),
+):
+    """Read-only relay to the Prometheus HTTP API (query / query_range only)."""
+    if kind not in ("query", "query_range"):
+        raise HTTPException(404, "not found")
+    params = {"query": query}
+    if kind == "query_range":
+        now = time.time()
+        params.update(start=start or now - 900, end=end or now, step=step or 15)
+    url = f"{PROMETHEUS_URL}/api/v1/{kind}?{urllib.parse.urlencode(params)}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        raise HTTPException(e.code, e.read().decode(errors="replace")[:300])
+    except (urllib.error.URLError, TimeoutError):
+        raise HTTPException(503, "prometheus unavailable")
+
+
 # ---------------------------------------------------------------- misc
+
+
+@app.middleware("http")
+async def record_requests(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = getattr(route, "path", "other")
+    if path.startswith("/api"):
+        http_requests.labels(request.method, path, str(response.status_code)).inc()
+        http_latency.labels(path).observe(time.perf_counter() - started)
+    return response
 
 
 @app.get("/metrics")
@@ -461,6 +525,9 @@ def metrics():
     counts = {}
     for d in backend.list():
         counts[d["status"]] = counts.get(d["status"], 0) + 1
+        if d["ready_seconds"] is not None and d["id"] not in _ready_observed:
+            _ready_observed.add(d["id"])
+            desktop_ready_seconds.labels(d["os"]).observe(d["ready_seconds"])
     for s in ("CREATING", "READY", "DELETING", "ERROR"):
         desktops_current.labels(s).set(counts.get(s, 0))
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
