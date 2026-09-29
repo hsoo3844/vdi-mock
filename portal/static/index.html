@@ -310,11 +310,20 @@ async function create(os, btn) {
   });
 }
 
+// Guacamole는 브라우저에 남은 세션 토큰이 있으면 새 ?data= 를 무시하고 그 세션을 재사용한다.
+// (예전 데스크톱만 든 세션 → 빈 "모든 연결" 화면) 같은 origin이므로 접속 전에 로그아웃·삭제한다.
+async function resetGuacamoleSession() {
+  let token = null;
+  try { token = JSON.parse(localStorage.getItem('GUAC_AUTH_TOKEN')); } catch {}
+  if (token) await fetch(`/guacamole/api/tokens/${encodeURIComponent(token)}`, { method: 'DELETE' }).catch(() => {});
+  try { localStorage.removeItem('GUAC_AUTH_TOKEN'); } catch {}
+}
+
 async function connect(id, btn) {
   const win = window.open('about:blank', '_blank');  // 팝업 차단 회피: 클릭 시점에 먼저 연다
   await busy(btn, async () => {
     try {
-      const d = await api('POST', `/api/desktops/${id}/connect`);
+      const [d] = await Promise.all([api('POST', `/api/desktops/${id}/connect`), resetGuacamoleSession()]);
       if (win) win.location = d.url; else location.href = d.url;
     } catch (e) { win?.close(); toast(humanError(e), 'err'); }
   });

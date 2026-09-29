@@ -33,6 +33,7 @@ import store
 NAMESPACE = os.environ.get("VDI_NAMESPACE", "vdi-dev")
 GUAC_JSON_KEY = bytes.fromhex(os.environ["GUAC_JSON_SECRET_KEY"])
 GUAC_URL = os.environ.get("GUAC_URL", "/guacamole/")
+GUAC_DATA_TTL = int(os.environ.get("GUAC_DATA_TTL_SEC", str(8 * 3600)))
 PROMETHEUS_URL = os.environ.get("PROMETHEUS_URL", "http://prometheus.monitoring:9090/prometheus")
 SESSION_KEY = os.environ.get("PORTAL_SESSION_KEY", secrets.token_hex(16)).encode()
 CREATE_TIMEOUT = int(os.environ.get("VDI_CREATE_TIMEOUT_SEC", "600"))
@@ -190,7 +191,8 @@ def guacamole_data(username, desktop):
     """Encrypted guacamole-auth-json payload (HMAC-SHA256 sign + AES-128-CBC)."""
     payload = {
         "username": username,
-        "expires": int((time.time() + 300) * 1000),
+        # 만료 후엔 세션에서 연결이 사라져 Guacamole 자동 재연결이 실패한다 → 사용 세션 길이만큼
+        "expires": int((time.time() + GUAC_DATA_TTL) * 1000),
         "connections": {
             # 연결 이름 = Guacamole 식별자. UI가 btoa()로 인코딩하므로 ASCII만 허용
             # (한글이 들어가면 InvalidCharacterError → 흰 화면)
