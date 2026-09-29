@@ -1,0 +1,79 @@
+# guacd(프로토콜 프록시)와 guacamole web을 별도 Deployment로 분리 → guacd만 스케일 가능
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacd
+  namespace: vdi-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: guacd }
+  template:
+    metadata:
+      labels: { app: guacd }
+    spec:
+      containers:
+        - name: guacd
+          image: guacamole/guacd:1.6.0
+          ports:
+            - containerPort: 4822
+          readinessProbe:
+            tcpSocket: { port: 4822 }
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guacd
+  namespace: vdi-dev
+spec:
+  selector: { app: guacd }
+  ports:
+    - port: 4822
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: guacamole
+  namespace: vdi-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: guacamole }
+  template:
+    metadata:
+      labels: { app: guacamole }
+    spec:
+      containers:
+        - name: guacamole
+          image: guacamole/guacamole:1.6.0
+          env:
+            - name: GUACD_HOSTNAME
+              value: guacd
+            - name: GUACD_PORT
+              value: "4822"
+            # guacamole-auth-json: 포털이 서명·암호화한 토큰으로만 접속
+            - name: JSON_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: vdi-secrets, key: guac-json-secret-key }
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /guacamole/, port: 8080 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 768Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: guacamole
+  namespace: vdi-dev
+spec:
+  selector: { app: guacamole }
+  ports:
+    - port: 8080

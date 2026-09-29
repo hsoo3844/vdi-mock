@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vdi
+  namespace: vdi-dev
+spec:
+  ingressClassName: traefik
+  rules:
+    - http:
+        paths:
+          - path: /guacamole
+            pathType: Prefix
+            backend:
+              service: { name: guacamole, port: { number: 8080 } }
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: vdi-portal, port: { number: 8000 } }

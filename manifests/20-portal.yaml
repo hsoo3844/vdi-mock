@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vdi-portal
+  namespace: vdi-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: vdi-portal }
+  template:
+    metadata:
+      labels: { app: vdi-portal }
+    spec:
+      serviceAccountName: vdi-portal
+      containers:
+        - name: portal
+          image: vdi-portal:0.1.0
+          imagePullPolicy: Never   # 레지스트리 없이 노드 containerd에 직접 import
+          env:
+            - name: VDI_NAMESPACE
+              value: vdi-dev
+            - name: GUAC_URL
+              value: /guacamole/
+            - name: GUAC_JSON_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: vdi-secrets, key: guac-json-secret-key }
+            - name: PORTAL_SESSION_KEY
+              valueFrom:
+                secretKeyRef: { name: vdi-secrets, key: portal-session-key }
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vdi-portal
+  namespace: vdi-dev
+spec:
+  selector: { app: vdi-portal }
+  ports:
+    - port: 8000

@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vdi-dev
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vdi-portal
+  namespace: vdi-dev
+---
+# 포털은 자기 네임스페이스의 데스크톱 Pod/Service만 다룬다 (최소 권한)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: vdi-portal
+  namespace: vdi-dev
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: vdi-portal
+  namespace: vdi-dev
+subjects:
+  - kind: ServiceAccount
+    name: vdi-portal
+    namespace: vdi-dev
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: vdi-portal

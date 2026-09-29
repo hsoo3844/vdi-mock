@@ -1,0 +1,21 @@
+# helm install traefik traefik/traefik -n traefik --create-namespace -f traefik-values.yaml
+# 실서버는 Worker-1 hostPort 443, 목업은 NodePort 30080 + VirtualBox NAT 포트포워딩
+service:
+  type: NodePort
+ports:
+  web:
+    nodePort: 30080
+  websecure:
+    nodePort: 30443
+nodeSelector:
+  kubernetes.io/hostname: worker1
+ingressClass:
+  enabled: true
+  isDefaultClass: true
+# Guacamole WebSocket 장시간 세션 유지
+additionalArguments:
+  - --entryPoints.web.transport.respondingTimeouts.readTimeout=0
+  - --entryPoints.web.transport.respondingTimeouts.idleTimeout=3600s
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { memory: 256Mi }

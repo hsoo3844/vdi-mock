@@ -1,0 +1,18 @@
+# 실제 설계의 보안그룹 규칙(K8s 워커발 RDP 3389만 허용)에 대응:
+# 데스크톱 Pod은 guacd에서 오는 3389만 받는다 → 사용자 데스크톱끼리 서로 접근 불가
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: desktop-rdp-from-guacd
+  namespace: vdi-dev
+spec:
+  podSelector:
+    matchLabels: { app: vdi-desktop }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: guacd }
+      ports:
+        - protocol: TCP
+          port: 3389
