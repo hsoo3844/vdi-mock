@@ -35,7 +35,7 @@ spec:
             - name: VDI_ADMIN_USERNAME
               value: admin
             - name: VDI_QUOTA_PER_USER
-              value: "1"
+              value: "2"
           ports:
             - containerPort: 8000
           readinessProbe:
