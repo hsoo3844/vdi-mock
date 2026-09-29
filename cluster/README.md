@@ -19,6 +19,7 @@
 3. 3대 모두 `sudo bash node-prep.sh`
 4. master에서 `sudo bash master-init.sh` → 출력된 `JOIN:` 명령을 worker 2대에서 sudo로 실행
 5. 스냅샷 `k8s-ready`
+6. 목업 배포 후 스냅샷 `vdi-deployed`
 
 ## 접속
 
@@ -27,12 +28,27 @@ ssh -J root@<Proxmox Tailscale IP> master@172.30.0.21
 kubectl get nodes
 ```
 
+## VDI 목업 배포 (시연용)
+
+```bash
+# worker 2대: 포털 이미지 import (레지스트리 없음)
+sudo ctr -n k8s.io images import /tmp/vdi-portal.tar
+# master: 레포 루트에서
+./scripts/deploy.sh
+```
+
+- 노드 이름이 `worker1`이라 `traefik-values.yaml` 수정 없이 Traefik이 worker1에 뜬다 (NodePort 30080).
+- Proxmox 호스트 DNAT (`/etc/network/interfaces`의 vmbr1 `post-up`, 원본은 `interfaces.bak-before-vdi-dnat`):
+  `iptables -t nat -A PREROUTING -i tailscale0 -d <호스트 Tailscale IP> -p tcp --dport 80 -j DNAT --to-destination 172.30.0.22:30080`
+- 접속: `http://<호스트 Tailscale IP>/` (포털), `/admin` (관리자, 이름 `admin`), `/prometheus/`
+  — Tailscale로 호스트가 공유된 사람만 접근 가능. 강의실 LAN·인터넷에는 열려 있지 않다.
+
 ## 되돌리기
 
 Proxmox 호스트에서 (VM을 끈 뒤):
 
 ```bash
-qm rollback 100 k8s-ready   # 또는 pre-k8s
+qm rollback 100 vdi-deployed   # 또는 k8s-ready, pre-k8s (101, 102도 같이)
 ```
 
 ## 구축하며 겪은 것
