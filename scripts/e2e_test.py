@@ -40,6 +40,8 @@ cons = requests.get(
     headers={"Guacamole-Token": j["authToken"]},
 ).json()
 print("guacamole connections", [(v["name"], v["protocol"]) for v in cons.values()])
+# Guacamole UI는 식별자를 btoa()로 인코딩 → 비-Latin1 문자가 있으면 흰 화면
+assert all(k.isascii() for k in cons), cons.keys()
 
 # 실제 RDP 세션: HTTP 터널로 연결해 guacd가 데스크톱 화면(img/size)을 보내는지 확인
 conn_id = next(iter(cons))

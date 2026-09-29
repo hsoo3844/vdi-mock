@@ -166,7 +166,9 @@ def guacamole_data(username, desktop):
         "username": username,
         "expires": int((time.time() + 300) * 1000),
         "connections": {
-            f"{desktop['os_name']} ({desktop['id']})": {
+            # 연결 이름 = Guacamole 식별자. UI가 btoa()로 인코딩하므로 ASCII만 허용
+            # (한글이 들어가면 InvalidCharacterError → 흰 화면)
+            f"{desktop['os']}-{desktop['id']}": {
                 "protocol": "rdp",
                 "parameters": {
                     "hostname": f"desk-{desktop['id']}.{NAMESPACE}.svc.cluster.local",
