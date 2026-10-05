@@ -1,5 +1,7 @@
 # cluster — Proxmox 테스트 K8s 구축
 
+> **2026-10-05 재구축:** 옛 VM 100~102를 지우고 VM 200(master 2vCPU/6GB/40GB) · 201·202(worker 4vCPU/14GB/80GB)로 새로 만들었다. CNI는 정본대로 **flannel v0.28.9**(`master-init-flannel.sh`), K8s v1.36.5, 앱은 올리지 않음. 스냅샷 `pre-k8s` → `k8s-ready`. 아래 내용은 9/29 Calico 버전 기록이다.
+
 팀 Proxmox(PVE 9.2) 위 VM 3대에 kubeadm으로 올린 테스트 클러스터. 2026-09-29 구축.
 
 | VM ID | 노드 | IP | vCPU / RAM / Disk |
