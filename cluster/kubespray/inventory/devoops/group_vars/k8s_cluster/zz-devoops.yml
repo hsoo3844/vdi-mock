@@ -3,7 +3,7 @@
 # 근거: 정본 CLAUDE.md 3장(주소·MTU), 4장(버전), 5장(스택). CNI = Calico (2026-10-06 팀 결정).
 
 # --- 버전 / 런타임
-kube_version: 1.36.5               # kubespray v2.32.0이 지원하는 1.36 최신 패치
+kube_version: 1.36.4               # kubespray v2.32.0이 지원하는 1.36 최신 패치 (1.36.5는 checksums에 없어 거부됨)
 container_manager: containerd
 
 # --- 주소 (정본 3장)
