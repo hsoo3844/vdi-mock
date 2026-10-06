@@ -11,7 +11,31 @@
 | 애드온 | 없음 (nodelocaldns·helm·metrics-server·ingress·cert-manager·argocd·local-path 끔) |
 | 실행 위치 | Actions Runner VM .30 |
 
-## Runner 준비
+## Runner 디렉터리 구조 (actions-runner@172.30.0.30, 2026-10-06 설정 완료)
+
+OpenStack 자동화도 같은 Runner에 들어오므로 도구마다 venv·SSH 키를 분리한다 (kubespray는 ansible 12.3.0 고정 → kolla-ansible과 같은 venv에서 충돌).
+
+```
+~/devoops/
+├── README.md
+├── k8s/
+│   ├── kubespray/   # upstream v2.32.0 (수정 금지)
+│   ├── venv/        # kubespray 전용
+│   ├── inventory/   # sample + hosts.yaml + group_vars/k8s_cluster/zz-devoops.yml
+│   ├── logs/        # 실행 로그 (START/END = 재구축 시간)
+│   └── run.sh       # ping | cluster | scale <node> | reset
+├── openstack/       # kolla-ansible 전용 (예정)
+└── terraform/{proxmox,openstack}/   # state 분리 (예정)
+~/.ssh/id_ed25519_k8s   # K8s 노드용 키 (노드 3대에 등록됨)
+```
+
+```bash
+~/devoops/k8s/run.sh ping            # 접속 확인
+~/devoops/k8s/run.sh cluster         # 구축 (백그라운드, logs/cluster-*.log)
+~/devoops/k8s/run.sh scale worker2   # 워커 재가입
+```
+
+## Runner 준비 (처음부터 할 때)
 
 ```bash
 sudo apt-get update && sudo apt-get install -y git python3-venv
