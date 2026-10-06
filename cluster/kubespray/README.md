@@ -1,0 +1,41 @@
+# kubespray — K8s 자동 구축 (CollabOps #14)
+
+정본 5장 "kubeadm 수동 → kubespray 자동화". kubespray **v2.32.0** (2026-09-22, K8s 1.36.5 지원, ansible==12.3.0).
+
+| 항목 | 값 |
+|---|---|
+| 노드 | master .21 (control-plane + etcd), worker1 .22, worker2 .23 |
+| K8s | 1.36.5, containerd |
+| CNI | **Calico** (2026-10-06 팀 결정), VXLAN Always, IPIP Never, MTU 1450, natOutgoing |
+| 주소 | Pod 10.244.0.0/16, Service 10.96.0.0/12 |
+| 애드온 | 없음 (nodelocaldns·helm·metrics-server·ingress·cert-manager·argocd·local-path 끔) |
+| 실행 위치 | Actions Runner VM .30 |
+
+## Runner 준비
+
+```bash
+sudo apt-get update && sudo apt-get install -y git python3-venv
+git clone --depth 1 --branch v2.32.0 https://github.com/kubernetes-sigs/kubespray.git ~/kubespray
+python3 -m venv ~/kubespray-venv
+~/kubespray-venv/bin/pip install -U pip
+~/kubespray-venv/bin/pip install -r ~/kubespray/requirements.txt
+
+# sample 복사 후 팀 인벤토리 덮어쓰기
+cp -r ~/kubespray/inventory/sample ~/kubespray/inventory/devoops
+cp hosts.yaml ~/kubespray/inventory/devoops/
+cp group_vars/k8s_cluster/zz-devoops.yml ~/kubespray/inventory/devoops/group_vars/k8s_cluster/
+```
+
+노드 쪽: Runner의 SSH 공개 키를 각 노드 사용자(`master`, `worker1`, `worker2`)의 `authorized_keys`에 등록하고, 각 사용자에게 비밀번호 없는 sudo(`/etc/sudoers.d/90-kubespray`)를 준다.
+
+## 실행
+
+```bash
+source ~/kubespray-venv/bin/activate
+cd ~/kubespray
+ansible -i inventory/devoops/hosts.yaml all -m ping            # 접속 확인
+ansible-playbook -i inventory/devoops/hosts.yaml cluster.yml   # 구축 (소요 시간 기록)
+ansible-playbook -i inventory/devoops/hosts.yaml scale.yml --limit worker2   # 워커 재가입
+```
+
+검증 전에는 VM 200~202를 Proxmox 스냅샷 `pre-k8s`로 되돌려 빈 상태에서 시작한다.

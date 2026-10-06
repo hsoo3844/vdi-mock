@@ -1,0 +1,37 @@
+# kubespray v2.32.0 인벤토리 — 팀 Proxmox K8s (정본 3장 주소 계획)
+# 실행 위치: Actions Runner VM(172.30.0.30). 노드 사용자명 = 노드 이름, SSH 키 인증 + 비밀번호 없는 sudo.
+all:
+  hosts:
+    master:
+      ansible_host: 172.30.0.21
+      ip: 172.30.0.21
+      access_ip: 172.30.0.21
+      ansible_user: master
+    worker1:
+      ansible_host: 172.30.0.22
+      ip: 172.30.0.22
+      access_ip: 172.30.0.22
+      ansible_user: worker1
+    worker2:
+      ansible_host: 172.30.0.23
+      ip: 172.30.0.23
+      access_ip: 172.30.0.23
+      ansible_user: worker2
+  vars:
+    ansible_become: true
+    ansible_python_interpreter: /usr/bin/python3
+  children:
+    kube_control_plane:
+      hosts:
+        master:
+    kube_node:
+      hosts:
+        worker1:
+        worker2:
+    etcd:
+      hosts:
+        master:
+    k8s_cluster:
+      children:
+        kube_control_plane:
+        kube_node:

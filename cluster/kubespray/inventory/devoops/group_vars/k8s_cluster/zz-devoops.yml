@@ -1,0 +1,36 @@
+# 팀 설정 덮어쓰기. 파일 이름을 zz-로 시작해 sample의 k8s-cluster.yml, k8s-net-calico.yml, addons.yml보다
+# 나중에 읽히게 한다 (같은 그룹 폴더의 변수 파일은 이름순으로 읽고, 뒤 파일이 이긴다).
+# 근거: 정본 CLAUDE.md 3장(주소·MTU), 4장(버전), 5장(스택). CNI = Calico (2026-10-06 팀 결정).
+
+# --- 버전 / 런타임
+kube_version: 1.36.5               # kubespray v2.32.0이 지원하는 1.36 최신 패치
+container_manager: containerd
+
+# --- 주소 (정본 3장)
+kube_pods_subnet: 10.244.0.0/16    # 기본값 192.168.0.0/16은 강의실 대역과 충돌
+kube_service_addresses: 10.96.0.0/12
+kube_network_node_prefix: 24
+supplementary_addresses_in_ssl_keys: [172.30.0.21]
+
+# --- CNI: Calico, VXLAN Always, MTU 1450 (정본 3장 MTU, 5장)
+kube_network_plugin: calico
+calico_network_backend: vxlan
+calico_vxlan_mode: Always
+calico_ipip_mode: Never
+calico_veth_mtu: 1450
+calico_pool_blocksize: 26
+nat_outgoing: true                 # Pod → 클러스터 밖은 노드 IP로 PAT (데스크톱 보안그룹이 .22/.23만 허용하는 전제)
+
+# --- kube-proxy / DNS: 수동 kubeadm 구축(2026-10-05)과 같은 최소 구성
+kube_proxy_mode: iptables
+dns_mode: coredns
+enable_nodelocaldns: false
+
+# --- 애드온은 올리지 않는다 ("클러스터만"). Ingress(Traefik)·helm·ArgoCD는 별도 이슈에서
+# (v2.32.0 sample 기본값: kube_proxy_mode ipvs, enable_nodelocaldns true, Pod 10.233.64.0/18 → 위에서 덮어씀.
+#  ingress_nginx_enabled 변수는 v2.32.0에 없다)
+helm_enabled: false
+metrics_server_enabled: false
+cert_manager_enabled: false
+argocd_enabled: false
+local_path_provisioner_enabled: false   # StorageClass는 [미정]
